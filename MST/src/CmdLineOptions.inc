@@ -81,6 +81,10 @@
               OptionKeys(n)='Emulation Precision Parameters'
               OptionValues(n) = '12,14,16'
 !
+   n = n + 1; Options(1,n)='-ems';  Options(2,n)='--emul-strategy'; Options(3,n)='--emul_strategy'
+              OptionKeys(n)='Emulation Strategy'
+              OptionValues(n) = '-1'  ! default, performant, or eager. Cublas-1 only.
+!
    n = n + 1; Options(1,n)='-cz';  Options(2,n)='--contour-zone'; Options(3,n)='--contour_zone'
               OptionKeys(n)='Energy Contour Zone Parameters'
               OptionValues(n) = '0.000,0.010'

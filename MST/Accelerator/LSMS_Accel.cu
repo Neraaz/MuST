@@ -10,6 +10,8 @@
 #include "cuComplex.h"
 #include "acclib.hpp"
 #include "accmath.hpp"
+#include "CusolverEmulation.hpp"
+#include "CublasEmulation.hpp"
 
 __constant__ int lmax_kkr_max = 8;
 __constant__ int lmax_max = 16; // = 2*lmax_kkr_max
@@ -385,6 +387,41 @@ cudaStream_t stream;
 cusolverDnHandle_t cusolverHandle;
 static cublasHandle_t cublasHandle = nullptr;
 
+namespace {
+// Emulation state. -2 means nothing has been applied yet, so the first call
+// always configures. EmulationModule.F90 rewrites the environment per
+// energy-contour zone, so the setting is re-read rather than cached at init.
+int    luMantissaBits      = -2;
+size_t luWorkspaceCapacity = 0;
+
+// Apply the current emulation setting and size the LU workspace for it.
+// The workspace size depends on the mantissa count, so it cannot be fixed at
+// allocation time; it grows on demand and is never shrunk.
+void prepareLUWorkspace() {
+   const int bits = cusolverEmulationMantissaBits();
+   if (bits == luMantissaBits) {
+      // Same scheme as last time. With a positive fixed count the live value
+      // still goes through the pointer slot, which costs one store.
+      if (bits > 0) setCublasEmulationMantissaBits(bits);
+      return;
+   }
+
+   configureCusolverEmulation(cusolverHandle, bits);
+   configureCublasEmulation(cublasHandle, bits);
+
+   int lwork = 0;
+   checkCusolverErrors(cusolverDnZgetrf_bufferSize(cusolverHandle, mmat_size, mmat_size,
+                                                   BigMat_d, mmat_size, &lwork));
+   const size_t bytes = static_cast<size_t>(lwork) * sizeof(cuDoubleComplex);
+   if (bytes > luWorkspaceCapacity) {
+      if (workArray) checkCudaErrors(cudaFreeAsync(workArray, stream));
+      checkCudaErrors(cudaMallocAsync((void **)&workArray, bytes, stream));
+      luWorkspaceCapacity = bytes;
+   }
+   luMantissaBits = bits;
+}
+} // namespace
+
 void runYlmOverLIZ(int na, int liz_max, int l_max) {
 
       // Define kernel launch parameters
@@ -541,11 +578,10 @@ void allocate_bigmatrix_gpu_() {
 
    checkCudaErrors(cudaMallocAsync((void**)&block_d, size_block, stream));
 
-   int Lwork = 0;
-   checkCusolverErrors(cusolverDnZgetrf_bufferSize(cusolverHandle, mmat_size, mmat_size, nullptr, 
-                                                   mmat_size, &Lwork));
-   checkCudaErrors(cudaMallocAsync((void**)&workArray, Lwork*sizeof(cuDoubleComplex), stream));
-      
+   // Sizes the LU workspace for whatever emulation setting is active. Must come
+   // after BigMat_d exists, since the size query takes it.
+   prepareLUWorkspace();
+
    BigMat_allocated = true;
 }
 
@@ -583,11 +619,15 @@ void allocate_sjgmatrix_gpu_() {
          gij_h = (double _Complex *) malloc(size_bigmat);
          memset(gij_h, 0, size_bigmat);     // set the host array to 0
 
-         checkCudaErrors(cudaMallocAsync((void**)&gij_d, size_bigmat,stream));
-         checkCudaErrors(cudaMemsetAsync(gij_d, 0, size_bigmat, stream)); // set the device array to 0
-
-         checkCudaErrors(cudaMallocAsync((void**)&jig_d, size_bigmat,stream));
-         checkCudaErrors(cudaMemsetAsync(jig_d, 0, size_bigmat, stream)); // set the device array to 0
+         // In-place assembly: M_ij = delta_ij*I - (1/kappa)*Jinv_i*G_ij*S_j depends
+         // only on the matching block of G, so M can overwrite G. gij_d therefore
+         // aliases BigMat_d instead of owning a second mmat_size^2 array, and the
+         // Jinv*G intermediate is formed one block row at a time in BigMatInv_d
+         // (mmat_size x tau_size, unused until the solve) rather than in a third.
+         // This drops the per-rank device footprint from three dense arrays to one.
+         gij_d = BigMat_d;
+         jig_d = nullptr;
+         checkCudaErrors(cudaMemsetAsync(gij_d, 0, size_bigmat, stream));
       }
       
       SJG_allocated = true;
@@ -677,11 +717,13 @@ void finalize_lsms_gpu_() {
       checkCudaErrors(cudaFreeAsync(jinv_d, stream));
       if (lsms_construction_mode == 0) {
          gij_d = nullptr;
+         checkCudaErrors(cudaFreeAsync(jig_d, stream));
       }
       else {
-         checkCudaErrors(cudaFreeAsync(gij_d, stream));
+         // both alias storage owned elsewhere; nothing to free here
+         gij_d = nullptr;
+         jig_d = nullptr;
       }
-      checkCudaErrors(cudaFreeAsync(jig_d, stream));
       free(sine_h);
       free(jinv_h);
       free(gij_h);
@@ -694,6 +736,9 @@ void finalize_lsms_gpu_() {
       checkCudaErrors(cudaFreeAsync(block_d, stream));
       checkCudaErrors(cudaFreeAsync(workArray, stream));
    }
+   workArray = nullptr;
+   luWorkspaceCapacity = 0;
+   luMantissaBits = -2;
    // Ensure all frees complete before destroying stream
    checkCublasErrors(cublasDestroy(cublasHandle));
    cublasHandle = nullptr;
@@ -744,7 +789,17 @@ void init_bigmatrix_gpu_(int *b_size) {
    // ========================================
    int threads_per_block = 512;
    int num_blocks = max(1,(mmat_size*mmat_size + threads_per_block - 1) / threads_per_block);
-   createUnitMatrixKernel<<<num_blocks, threads_per_block>>>(BigMat_d, mmat_size);
+   if (lsms_construction_mode == 0) {
+      createUnitMatrixKernel<<<num_blocks, threads_per_block>>>(BigMat_d, mmat_size);
+   }
+   else {
+      // BigMat_d doubles as gij_d here. computeGijKernel writes only the
+      // off-diagonal blocks (it guards on ip != jp) and relies on the rest being
+      // zero, so this must be zeroed, not set to the identity; construct_bigmatrix
+      // adds the identity to the diagonal blocks after the products are formed.
+      checkCudaErrors(cudaMemsetAsync(BigMat_d, 0,
+               static_cast<size_t>(mmat_size)*mmat_size*sizeof(cuDoubleComplex), stream));
+   }
    checkCudaErrors(cudaPeekAtLastError());
 }
 
@@ -865,6 +920,14 @@ void commit_to_gpu_(int *mat_id) {
    }
 }
 
+// Add 1 to every diagonal entry, for the in-place monolithic assembly.
+__global__ void addIdentityKernel(cuDoubleComplex *a, int n) {
+   for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
+      const size_t d = static_cast<size_t>(i) * n + i;
+      a[d] = cuCadd(a[d], make_cuDoubleComplex(1.0, 0.0));
+   }
+}
+
 extern "C"
 void construct_bigmatrix_gpu_(double _Complex *kappa, int *numnb_max, 
                               int *ia, int *num_nbs, int *lmax_kkr) {
@@ -938,29 +1001,52 @@ void construct_bigmatrix_gpu_(double _Complex *kappa, int *numnb_max,
           exit(EXIT_FAILURE);
        }
        const int num_atom_blocks = mmat_size / tau_size;
-       const long long column_stride = static_cast<long long>(tau_size) * mmat_size;
        const long long block_stride = static_cast<long long>(tau_size) * tau_size;
+       const long long col_stride_n = static_cast<long long>(tau_size) * mmat_size;
 
-       // jinv and sine contain packed diagonal blocks, with tau_size including spin.
-       // Batch over block rows: jig(i,:) = jinv(i,i) * gij(i,:).
-       // Dense Gij, jig and BigMat retain the full column-major leading dimension.
-       // Row batches write disjoint rows, with a stride of tau_size elements.
-       checkCublasErrors(cublasZgemmStridedBatched(cublasHandle, CUBLAS_OP_N, CUBLAS_OP_N,
-                                     tau_size, mmat_size, tau_size, &one,
-                                     jinv_d, tau_size, block_stride,
-                                     gij_d, mmat_size, tau_size,
-                                     &zero, jig_d, mmat_size, tau_size,
-                                     num_atom_blocks));
+       // jinv and sine hold packed diagonal blocks, tau_size including spin, so
+       //
+       //     M_ij = delta_ij * I - (1/kappa) * Jinv_i * G_ij * S_j
+       //
+       // couples no two blocks: each tau_size x tau_size output block depends only
+       // on the matching block of G. M can therefore be written over G in place,
+       // which is why gij_d aliases BigMat_d and no separate jig array exists.
+       //
+       // One block row at a time:
+       //   T        = Jinv_i * G(i,:)                    (tau_size x mmat_size)
+       //   M(i,j)   = -(1/kappa) * T(:,j) * S_j          for every j, batched
+       // T lives in BigMatInv_d, which is mmat_size x tau_size and unused until the
+       // solve. Step 1 consumes the whole block row before step 2 overwrites it, and
+       // a row's write touches only that row, so the aliasing is safe.
+       // Flop count is unchanged at 16*mmat_size^2*tau_size.
+       cuDoubleComplex * const tmp_row = BigMatInv_d;   // tau_size x mmat_size, ld = tau_size
 
-       // Batch over block columns: BigMat(:,j) -= jig(:,j) * sine(j,j) / kappa.
-       // beta = 1 preserves the identity initialized in BigMat_d.
-       // Both products cost O(mmat_size^2 * tau_size), instead of O(mmat_size^3).
-       checkCublasErrors(cublasZgemmStridedBatched(cublasHandle, CUBLAS_OP_N, CUBLAS_OP_N,
-                                     mmat_size, tau_size, tau_size, &alpha,
-                                     jig_d, mmat_size, column_stride,
-                                     sine_d, tau_size, block_stride,
-                                     &one, BigMat_d, mmat_size, column_stride,
-                                     num_atom_blocks));
+       for (int i = 0; i < num_atom_blocks; ++i) {
+          cuDoubleComplex * const g_row = gij_d + static_cast<long long>(i) * tau_size;
+
+          checkCublasErrors(cublasZgemm_v2(cublasHandle, CUBLAS_OP_N, CUBLAS_OP_N,
+                                        tau_size, mmat_size, tau_size, &one,
+                                        jinv_d + static_cast<long long>(i) * block_stride, tau_size,
+                                        g_row, mmat_size,
+                                        &zero, tmp_row, tau_size));
+
+          checkCublasErrors(cublasZgemmStridedBatched(cublasHandle, CUBLAS_OP_N, CUBLAS_OP_N,
+                                        tau_size, tau_size, tau_size, &alpha,
+                                        tmp_row, tau_size, block_stride,
+                                        sine_d, tau_size, block_stride,
+                                        &zero, g_row, mmat_size, col_stride_n,
+                                        num_atom_blocks));
+       }
+
+       // Add the identity to the diagonal blocks. init_bigmatrix_gpu_ zeroed the
+       // array rather than seeding I, because computeGijKernel skips ip == jp and
+       // needs those blocks to start at zero.
+       {
+          const int tpb = 256;
+          const int nb  = max(1, (mmat_size + tpb - 1) / tpb);
+          addIdentityKernel<<<nb, tpb, 0, stream>>>(BigMat_d, mmat_size);
+          checkCudaErrors(cudaPeekAtLastError());
+       }
     }
 }
 
@@ -979,6 +1065,9 @@ void invert_bigmatrix_gpu_(double _Complex *block, int *block_size) {
       fprintf(stderr,"\nError: tau_size <> block_size, %d,%d\n",tau_size,*block_size);
       exit(EXIT_FAILURE);
    }
+
+   // Pick up any precision change EmulationModule made for this energy point.
+   prepareLUWorkspace();
 
    // Factor the full matrix; all rows contribute to the requested inverse block.
    checkCusolverErrors(cusolverDnZgetrf(cusolverHandle, mmat_size, mmat_size, BigMat_d, mmat_size, 

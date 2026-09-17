@@ -159,6 +159,11 @@ Example input files are available under ``MST/sample/``.
      - Emulation Precision Parameters
      - ``12,14,16``
 
+   * - ``-ems``
+     - ``--emul-strategy``, ``--emul_strategy``
+     - Emulation Strategy
+     - ``-1``
+
    * - ``-cz``
      - ``--contour-zone``, ``--contour_zone``
      - Energy Contour Zone Parameters
@@ -174,9 +179,36 @@ Example input files are available under ``MST/sample/``.
    ``-1`` therefore reads as *always supplied*.
 
    ``-wp``, ``-rp`` and ``-app`` take an integer argument; ``-em`` takes an
-   integer scheme selector (``0`` none, ``1`` Ozaki 1, ``2`` Ozaki 2); ``-emp``
-   and ``-cz`` take comma-separated lists. The remaining options are switches
-   that take no argument.
+   emulation scheme *name* matched against ``MST/src/EmulationEnvVar.inc``
+   (``Cublas-1`` or ``GEMMul8``); ``-emp`` and ``-cz`` take comma-separated
+   lists; ``-ems`` takes ``default``, ``performant`` or ``eager``. The remaining
+   options are switches that take no argument.
+
+   ``-ems`` sets ``CUBLAS_EMULATION_STRATEGY`` and applies to ``Cublas-1`` only,
+   since ``GEMMul8`` has no strategy setting; naming it with any other scheme is
+   an error rather than a silent no-op. It overrides both the value compiled
+   into ``EmulationEnvVar.inc`` and anything exported before the job.
+   ``performant`` emulates where it is expected to be faster, ``eager``
+   emulates whenever possible, and ``default`` defers to the library.
+
+   Precision Method:
+      mst2 --no_blocking_constr -em Cublas-1 < i_mst
+
+      Another option: -em GEMMul8
+
+   Choosing the strategy in Cublas-1 (CUDA):
+      mst2 --no_blocking_constr -em Cublas-1 -ems eager < i_mst
+
+   Per contour zone, low precision far from the real axis:
+      mst2 --no_blocking_constr -em Cublas-1 -emp 31,31,63 -cz 0.000,0.010 < i_mst
+
+      For GEMMul8, you will provide as num_moduli with -emp.
+
+   Or set the variables directly, bypassing EmulationModule:
+      export CUBLAS_EMULATE_DOUBLE_PRECISION=1
+      export CUBLAS_FIXEDPOINT_EMULATION_MANTISSA_BIT_COUNT=63
+      export CUBLAS_EMULATION_STRATEGY=eager
+
 
    The acceleration options (``-cpu``, ``-abm``, ``-cbm``, ``-agm``, ``-cgm``,
    ``-re``) have an effect only in a build configured with GPU support.

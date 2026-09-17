@@ -360,7 +360,7 @@ contains
    character (len=string_len) :: sval, zval, s
    character (len=VarStrLen) :: sname
 !
-   integer (kind=IntKind) :: i, num_zone_params, rstatus, set_status
+   integer (kind=IntKind) :: i, num_zone_params, rstatus, set_status, i_strat
 !
    interface
       function nocaseCompare(s1,s2) result(t)
@@ -470,6 +470,53 @@ contains
    if (.not.emul_enabled) then
       SchemeIndex = 0
       return
+   endif
+!
+!  ===================================================================
+!  Apply -ems/--emul-strategy, if given. This overrides both the value
+!  compiled into EmulationEnvVar.inc and anything exported before the job.
+!  The variable is named by the scheme table, so a scheme without one --
+!  GEMMul8 has no strategy -- is rejected rather than silently ignored.
+!  ===================================================================
+   if (isOptionDefined('Emulation Strategy')) then
+      rstatus = getCmdLineOptionValue('Emulation Strategy',sval)
+      if (.not.nocaseCompare(sval,'default') .and.                      &
+          .not.nocaseCompare(sval,'performant') .and.                   &
+          .not.nocaseCompare(sval,'eager')) then
+!        ----------------------------------------------------------------
+         call ErrorHandler('read_cmdline_emul_param',                    &
+                           'Emulation strategy must be default, performant, or eager', &
+                           sval)
+!        ----------------------------------------------------------------
+      endif
+      i_strat = 0
+      do i = 1, NumEnvVars(SchemeIndex)
+         if (nocaseCompare(ExtraEnvVar(i,SchemeIndex),'CUBLAS_EMULATION_STRATEGY')) then
+            i_strat = i
+            exit
+         endif
+      enddo
+      if (i_strat == 0) then
+!        ----------------------------------------------------------------
+         call ErrorHandler('read_cmdline_emul_param',                    &
+                           'The selected emulation scheme has no strategy setting', &
+                           SchemeName(SchemeIndex))
+!        ----------------------------------------------------------------
+      endif
+      ExtraEnvVarValue(i_strat,SchemeIndex) = sval
+!     -------------------------------------------------------------------
+      call setEnvVar(ExtraEnvVar(i_strat,SchemeIndex),                   &
+                     ExtraEnvVarValue(i_strat,SchemeIndex), set_status)
+!     -------------------------------------------------------------------
+      if (set_status /= 0) then
+!        ----------------------------------------------------------------
+         call WarningHandler('read_cmdline_emul_param',                  &
+                             'Setting the emulation strategy failed',    &
+                             ExtraEnvVar(i_strat,SchemeIndex))
+!        ----------------------------------------------------------------
+      else if (print_instr >= 0) then
+         write(6,'(3a)')'---- Emulation strategy is set to: ',trim(sval)
+      endif
    endif
 !
    if (.not.isOptionDefined('Emulation Precision Parameters')) then
