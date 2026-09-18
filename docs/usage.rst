@@ -214,10 +214,22 @@ Example input files are available under ``MST/sample/``.
    ``-re``) have an effect only in a build configured with GPU support.
    ``-cpu``/``--cpu-only`` takes precedence over the others and over the
    ``MUST_*_GPU`` environment variables, disabling every accelerated path:
-   the KKR matrix (``ClusterMatrixModule``), the radial density interpolation
+   the LSMS cluster matrix (``ClusterMatrixModule``), the KKR crystal matrix
+   (``CrystalMatrixModule``), the radial density interpolation
    (``DensityOnGridModule``), the pseudo-potential back-projection
    (``PseudoPotBackProjModule``) and the single-site radial march
    (``SSMarchModule``).
+
+   The ``CrystalMatrixModule`` case is a fix carried by this fork. Upstream,
+   the two ``invertMatrixKKR_CUDA`` calls in that module sit inside a bare
+   ``#ifdef ACCEL`` with no runtime test, and the host ``ZGETRF``/``ZGETRI``
+   fallback is compiled out, so an ``ACCEL`` build offloaded the KKR matrix
+   inverse to the GPU even under ``--cpu-only``. This affects
+   ``Method of SCF Calculation :: 2`` (KKR) and ``:: 3`` (KKR-CPA) only; the
+   LSMS path (``:: 1``) goes through ``ClusterMatrixModule``, which has always
+   honoured the flag. Here the fallback is compiled unconditionally and both
+   calls are guarded by a module-level ``GPU_Offloading`` flag set once in
+   ``initCrystalMatrix``.
 
 .. warning::
 

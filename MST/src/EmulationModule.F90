@@ -14,7 +14,7 @@ public :: initEmulation,          &
           getExtraEnvVar,         &
           getExtraEnvVarValue
 !
-   integer (kind=IntKind), parameter, public :: VarStrLen = 32
+   integer (kind=IntKind), parameter, public :: VarStrLen = 64
 !
 private
    integer (kind=IntKind), parameter :: MaxSchemes = 8 ! Maximum number of emulation schemes
