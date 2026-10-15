@@ -117,3 +117,19 @@ FP_CUDA.patch
 MST/Accelerator/tests/
 MST/src/PotentialGenerationModule.F90.prenvtx
 MST/src/mst2.F90.prenvtx
+# Generated architecture files
+/KUBO/architecture.h
+/MST/architecture.h
+/external/architecture.h
+
+# FFTW
+/external/fftw/FFTW
+/external/fftw/fftw-3.3.8/
+
+# LibXC
+/external/libxc/LibXC
+/external/libxc/libxc-5.0.0/
+
+# P3DFFT
+/external/p3dfft/P3DFFT
+/external/p3dfft/p3dfft-2.7.9/

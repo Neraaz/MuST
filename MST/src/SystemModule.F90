@@ -709,6 +709,7 @@ contains
             Evec(1:3,i) = evt(1:3)
          enddo
       else
+         evt(1) = ZERO; evt(2) = ZERO; evt(3) = ONE
          do i=1,NumAtoms
             Evec(1:3,i) = evt(1:3)
          enddo
@@ -777,6 +778,7 @@ contains
             ConstrainField(1:3,i) = evt(1:3)
          enddo
       else
+         evt(1:3) = ZERO
          do i=1,NumAtoms
             ConstrainField(1:3,i) = evt(1:3)
          enddo
