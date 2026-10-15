@@ -184,6 +184,13 @@ Example input files are available under ``MST/sample/``.
    lists; ``-ems`` takes ``default``, ``performant`` or ``eager``. The remaining
    options are switches that take no argument.
 
+   ``-emp`` accepts either a single value, which applies uniformly to every
+   energy point, or a comma-separated list of per-zone values, in which case
+   ``-cz`` must supply one fewer boundary than there are values. For
+   ``Cublas-1`` the value is a retained mantissa bit count; for ``GEMMul8`` it
+   is ``num_moduli``, which the library accepts only in the range 2 to 20 for
+   complex double and otherwise falls back to native BLAS without a message.
+
    ``-ems`` sets ``CUBLAS_EMULATION_STRATEGY`` and applies to ``Cublas-1`` only,
    since ``GEMMul8`` has no strategy setting; naming it with any other scheme is
    an error rather than a silent no-op. It overrides both the value compiled

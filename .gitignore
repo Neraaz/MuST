@@ -112,3 +112,8 @@ local.properties
 .scala_dependencies
 .worksheet
 .idea/**
+FP_CUDA.md
+FP_CUDA.patch
+MST/Accelerator/tests/
+MST/src/PotentialGenerationModule.F90.prenvtx
+MST/src/mst2.F90.prenvtx

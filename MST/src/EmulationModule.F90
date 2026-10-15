@@ -407,7 +407,7 @@ contains
    if (isOptionDefined('Emulation Scheme')) then
       rstatus = getCmdLineOptionValue('Emulation Scheme',sname)
       if (emul_enabled) then
-         if (nocaseCompare(sname,SchemeName(SchemeIndex)) /= 0) then
+         if (.not.nocaseCompare(sname,SchemeName(SchemeIndex))) then
             call ErrorHandler('read_cmdline_emul_param','Inconsistent schemes are given', &
                               sname,SchemeName(SchemeIndex))
          endif
@@ -418,7 +418,7 @@ contains
 !        =============================================================
          SchemeIndex = 0
          do i = 1, NumSchemes
-            if (nocaseCompare(sname,SchemeName(i)) == 0) then
+            if (nocaseCompare(sname,SchemeName(i))) then
                SchemeIndex = i
                exit
             endif
@@ -550,6 +550,31 @@ contains
       enddo
    else
       num_energy_zones = 1
+   endif
+!
+   if (num_energy_zones == 1 .and. len_trim(prec_ez_param(1)) > 0) then
+!     ================================================================
+!     A single precision parameter applies uniformly to all energies.
+!     It is applied here, once, because setEmulationPrec does not set
+!     the environment variable in the one-zone case. The len_trim test
+!     skips the path where the option is defined but its value could
+!     not be retrieved, which leaves prec_ez_param blank.
+!     ================================================================
+      PrecEnvVarValue(SchemeIndex) = prec_ez_param(1)
+!     ----------------------------------------------------------------
+      call setEnvVar(PrecEnvVar(SchemeIndex),                         &
+                     PrecEnvVarValue(SchemeIndex), set_status)
+!     ----------------------------------------------------------------
+      if (set_status /= 0) then
+!        -------------------------------------------------------------
+         call WarningHandler('read_cmdline_emul_param',               &
+                             'Setting the emulation precision failed',&
+                             PrecEnvVar(SchemeIndex))
+!        -------------------------------------------------------------
+      else if (print_instr >= 0) then
+         write(6,'(3a)')'---- Emulation precision is set to: ',       &
+                        trim(PrecEnvVarValue(SchemeIndex))
+      endif
    endif
 !
    if (num_energy_zones > 1) then
