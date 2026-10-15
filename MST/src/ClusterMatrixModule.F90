@@ -1285,7 +1285,8 @@ contains
 !
    use CmdLineOptionModule, only : getCmdLineOption
 !
-   use EmulationModule, only : isEmulationEnabled, setEmulationPrec
+   use EmulationModule, only : isEmulationEnabled, setEmulationPrec, &
+                               suspendEmulation, resumeEmulation
 !
    implicit none
 !
@@ -1360,6 +1361,12 @@ contains
    if (isEmulationEnabled()) then
 !     ----------------------------------------------------------------
       call setEmulationPrec(energy)
+!     ----------------------------------------------------------------
+!     Only the KKR matrix inverse is emulated. The Gij and KKR matrix
+!     construction GEMMs are thin (inner dimension = kkrsz_ns), and
+!     emulating them costs far more than it saves.
+!     ----------------------------------------------------------------
+      call suspendEmulation()
 !     ----------------------------------------------------------------
    endif
 !
@@ -1923,10 +1930,20 @@ contains
                   endif
                endif
             endif
+            if (isEmulationEnabled()) then
+!              -------------------------------------------------------
+               call resumeEmulation()
+!              -------------------------------------------------------
+            endif
             t0 = getTime()
 !           ----------------------------------------------------------
             call invert_bigmatrix_gpu(BlockMatrix,kkrsz_ns) 
 !           ----------------------------------------------------------
+            if (isEmulationEnabled()) then
+!              -------------------------------------------------------
+               call suspendEmulation()
+!              -------------------------------------------------------
+            endif
             if (TimingLSMS) then
                t1 = getTime() - t0
 !              -------------------------------------------------------

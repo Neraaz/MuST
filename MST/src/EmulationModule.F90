@@ -9,6 +9,8 @@ public :: initEmulation,          &
           endEmulation,           &
           isEmulationEnabled,     &
           setEmulationPrec,       &
+          suspendEmulation,       &
+          resumeEmulation,        &
           getPrecEnvVar,          &
           getPrecEnvVarValue,     &
           getExtraEnvVar,         &
@@ -236,9 +238,12 @@ contains
             endif
          enddo
       endif
-      if (zone_id > 0) then
-         PrecEnvVarValue(SchemeIndex) = prec_ez_param(zone_id)
+      if (zone_id == 0) then
+!        Im[E] = 0 (e.g. the real-axis endpoint at the Fermi level)
+!        belongs to the zone closest to the real axis
+         zone_id = num_energy_zones
       endif
+      PrecEnvVarValue(SchemeIndex) = prec_ez_param(zone_id)
 !     ----------------------------------------------------------------
       call setEnvVar(PrecEnvVar(SchemeIndex),                            &
                      PrecEnvVarValue(SchemeIndex),                       &
@@ -255,6 +260,101 @@ contains
    endif
 !
    end subroutine setEmulationPrec
+!  ===================================================================
+!
+!  ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+   subroutine suspendEmulation()
+!  ===================================================================
+!  Make the GEMMs that follow run in native FP64. This is done for the
+!  GEMMul8 scheme only: its hook reads the number of moduli at every
+!  call, and a value outside its valid range (here 0) makes the hook
+!  call the native cuBLAS routine without allocating any workspace.
+!  PrecEnvVarValue(SchemeIndex) is left untouched, so that
+!  resumeEmulation can restore the precision of the current energy.
+!  ===================================================================
+   implicit none
+!
+   integer (kind=IntKind) :: set_status
+!
+   interface
+      function nocaseCompare(s1,s2) result(t)
+         character (len=*), intent(in) :: s1
+         character (len=*), intent(in) :: s2
+         logical :: t
+      end function nocaseCompare
+   end interface
+!
+   interface
+      subroutine setEnvVar(env_name,env_value,set_status)
+         use KindParamModule, only : IntKind
+         implicit none
+         character (len=*), intent(in) :: env_name
+         character (len=*), intent(in) :: env_value
+         integer (kind=intKind), intent(out) :: set_status
+      end subroutine setEnvVar
+   end interface
+!
+   if (.not.emul_enabled .or. SchemeIndex < 1) then
+      return
+   else if (.not.nocaseCompare(SchemeName(SchemeIndex),'GEMMul8')) then
+      return
+   endif
+!
+!  -------------------------------------------------------------------
+   call setEnvVar(PrecEnvVar(SchemeIndex),'0',set_status)
+!  -------------------------------------------------------------------
+   if (set_status /= 0) then
+      call WarningHandler('suspendEmulation','Suspending emulation failed', &
+                          PrecEnvVar(SchemeIndex))
+   endif
+!
+   end subroutine suspendEmulation
+!  ===================================================================
+!
+!  ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+   subroutine resumeEmulation()
+!  ===================================================================
+!  Restore the emulation precision last set by setEmulationPrec (or by
+!  the command line option in the one-zone case).
+!  ===================================================================
+   implicit none
+!
+   integer (kind=IntKind) :: set_status
+!
+   interface
+      function nocaseCompare(s1,s2) result(t)
+         character (len=*), intent(in) :: s1
+         character (len=*), intent(in) :: s2
+         logical :: t
+      end function nocaseCompare
+   end interface
+!
+   interface
+      subroutine setEnvVar(env_name,env_value,set_status)
+         use KindParamModule, only : IntKind
+         implicit none
+         character (len=*), intent(in) :: env_name
+         character (len=*), intent(in) :: env_value
+         integer (kind=intKind), intent(out) :: set_status
+      end subroutine setEnvVar
+   end interface
+!
+   if (.not.emul_enabled .or. SchemeIndex < 1) then
+      return
+   else if (.not.nocaseCompare(SchemeName(SchemeIndex),'GEMMul8')) then
+      return
+   endif
+!
+!  -------------------------------------------------------------------
+   call setEnvVar(PrecEnvVar(SchemeIndex),                            &
+                  PrecEnvVarValue(SchemeIndex),set_status)
+!  -------------------------------------------------------------------
+   if (set_status /= 0) then
+      call WarningHandler('resumeEmulation','Resuming emulation failed', &
+                          PrecEnvVar(SchemeIndex))
+   endif
+!
+   end subroutine resumeEmulation
 !  ===================================================================
 !
 !  ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc

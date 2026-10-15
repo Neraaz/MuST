@@ -133,3 +133,4 @@ MST/src/mst2.F90.prenvtx
 # P3DFFT
 /external/p3dfft/P3DFFT
 /external/p3dfft/p3dfft-2.7.9/
+*.txt
